@@ -11,27 +11,28 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
+
+# Configuración para Selenium remoto
+SELENIUM_HUB_URL = "http://localhost:4444/wd/hub"
+USE_REMOTE_SELENIUM = True  # Cambiar a False para usar Selenium local
 
 NTFY_TOPIC_URL = "https://ntfy.sh/tu_canal_secreto_wallapop"
 JSON_FILENAME = "wallapop_anuncios.json"
 MAX_CLICKS_LOAD_MORE = 5
 
 def build_wallapop_search_url(
-    keywords="", category_id="100", brand="", model="", # Cambiado category_ids a category_id
+    keywords="", category_id="100", brand="", model="",
     min_km="", max_km="", min_year="", max_year="",
     gearbox="", seller_type="", engine="",
     source="search_box", country_code="ES",
     latitude="", longitude="",
     min_sale_price="", max_sale_price="",
     time_filter="", 
-    distance_in_km="" # Cambiado distance_in_km a distance_in_km (valor en km)
+    distance_km="" 
 ):
-    """
-    Construye la URL de búsqueda para Wallapop con los parámetros dados.
-    Incluye filtros de ubicación, precio y tiempo.
-    """
     params = {
-        'keywords': keywords, 'category_id': category_id, 'brand': brand, # Cambiado category_ids a category_id
+        'keywords': keywords, 'category_id': category_id, 'brand': brand,
         'model': model, 'min_km': min_km, 'max_km': max_km,
         'min_year': min_year, 'max_year': max_year, 'gearbox': gearbox,
         'seller_type': seller_type, 'engine': engine, 'source': source,
@@ -41,9 +42,8 @@ def build_wallapop_search_url(
         'time_filter': time_filter
     }
     
-    # Añadir distancia en metros si se proporciona distance_in_km
-    if distance_in_km and str(distance_in_km).strip().isdigit():
-        params['distance'] = int(str(distance_in_km).strip()) * 1000
+    if distance_km and str(distance_km).strip().isdigit():
+        params['distance'] = int(str(distance_km).strip()) * 1000
 
     filtered_params = {k: v for k, v in params.items() if v is not None and str(v).strip() != ""}
     query_string = urllib.parse.urlencode(filtered_params)
@@ -116,7 +116,7 @@ def save_listings_to_json(all_current_listings_map, filename=JSON_FILENAME):
 def scrape_current_page_listings(driver):
     current_page_listings = []
     try:
-        WebDriverWait(driver, 10).until( # Aumentado ligeramente el wait por si acaso
+        WebDriverWait(driver, 10).until(
              EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.ItemCardList a.ItemCardList__item"))
         )
         item_elements = driver.find_elements(By.CSS_SELECTOR, "div.ItemCardList a.ItemCardList__item")
@@ -138,7 +138,6 @@ def scrape_current_page_listings(driver):
                     price_element = item_element.find_element(By.CSS_SELECTOR, "span.ItemCard__price")
                     price = price_element.text.strip()
                 except NoSuchElementException: 
-                    # print(f"  Precio no encontrado con 'span.ItemCard__price' para el item con título (aprox): {title[:30]}")
                     pass
                 
                 href_attr = item_element.get_attribute('href')
@@ -151,7 +150,6 @@ def scrape_current_page_listings(driver):
                     img_src = img_element.get_attribute('src')
                     if img_src: image_url = img_src
                 except NoSuchElementException:
-                    # print(f"  Imagen no encontrada con 'div.ItemCard__image img' para el item con título (aprox): {title[:30]}")
                     pass
 
                 if url != "No disponible":
@@ -173,7 +171,7 @@ def scrape_all_listings_with_load_more(driver):
     while clicks < MAX_CLICKS_LOAD_MORE:
         print(f"Extrayendo anuncios (intento de carga #{clicks + 1})...")
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(4) # Aumentar un poco por si hay lazy loading que afecte a los selectores
+        time.sleep(4) 
 
         current_page_items = scrape_current_page_listings(driver)
         newly_added_this_iteration = 0
@@ -187,7 +185,7 @@ def scrape_all_listings_with_load_more(driver):
         else:
             print("No se encontraron items en la vista actual de la página en este intento.")
 
-        if newly_added_this_iteration == 0 and clicks > 0 : # Solo contar racha si ya hubo clics previos
+        if newly_added_this_iteration == 0 and clicks > 0 : 
             no_new_items_streak += 1
             if no_new_items_streak >= 2:
                  print("No se encontraron más anuncios nuevos tras varios intentos con 'Cargar más'. Finalizando carga.")
@@ -196,27 +194,39 @@ def scrape_all_listings_with_load_more(driver):
             no_new_items_streak = 0
 
         try:
-            load_more_button_xpath = "//walla-button[@text='Cargar más' and not(@disabled)] | //button[contains(., 'Cargar más') and not(@disabled)]"
-            WebDriverWait(driver, 7).until(EC.presence_of_element_located((By.XPATH, load_more_button_xpath))) # Solo presencia
-            load_more_button = driver.find_element(By.XPATH, load_more_button_xpath)
+            # XPath actualizado para el botón "Cargar más"
+            load_more_button_xpath = (
+                "//walla-button[not(@disabled) and (@text='Cargar más' or contains(., 'Cargar más'))] | "
+                "//button[not(@disabled) and .//span[normalize-space()='Cargar más'] and contains(@class, 'walla-button__button')]"
+            )
             
-            # Scroll hasta el botón y luego un poco más para asegurar visibilidad y clickeabilidad
-            driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", load_more_button)
-            time.sleep(0.5)
-            driver.execute_script("window.scrollBy(0, 150);") # Scroll un poco más para evitar que esté tapado
+            # Esperar a que el botón esté presente en el DOM
+            WebDriverWait(driver, 7).until(
+                EC.presence_of_element_located((By.XPATH, load_more_button_xpath))
+            )
+            # Obtener la referencia al botón (para scrollIntoView)
+            # Es posible que el botón exista pero no sea clickeable aún
+            load_more_button_element = driver.find_element(By.XPATH, load_more_button_xpath)
+            
+            driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", load_more_button_element)
+            time.sleep(0.5) # Pausa para que el scroll se complete
+            # Scroll un poco más por si está tapado por un footer/banner flotante
+            driver.execute_script("window.scrollBy(0, 200);") # Aumentado scroll adicional
             time.sleep(0.5)
 
-            # Esperar a que sea clickeable
-            load_more_button = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, load_more_button_xpath)))
+            # Esperar a que el botón sea clickeable (esto es lo más importante)
+            # Esta espera buscará nuevamente el elemento y verificará su estado
+            clickable_button = WebDriverWait(driver, 7).until( # Aumentado a 7s
+                EC.element_to_be_clickable((By.XPATH, load_more_button_xpath))
+            )
             print("Botón 'Cargar más' encontrado y clickeable. Haciendo clic...")
-            # driver.execute_script("arguments[0].click();", load_more_button) # Click con JS
-            load_more_button.click() # Click directo de Selenium
+            clickable_button.click() 
             
             clicks += 1
             print("Esperando carga de nuevos items...")
             time.sleep(5) 
         except TimeoutException:
-            print("No se encontró el botón 'Cargar más' (o no es clickeable/visible). Asumiendo fin de resultados.")
+            print("No se encontró el botón 'Cargar más' (o no es clickeable/visible tras espera). Asumiendo fin de resultados.")
             break
         except Exception as e:
             print(f"Error al intentar clickear 'Cargar más': {e}")
@@ -225,13 +235,37 @@ def scrape_all_listings_with_load_more(driver):
     print(f"Total de anuncios únicos extraídos en esta ejecución después de {clicks} clics en 'Cargar más': {len(all_fetched_listings)}")
     return all_fetched_listings
 
-def run_scraper(search_params, send_notifications=True, headless_mode=False):
-    final_url = build_wallapop_search_url(**search_params)
-    print(f"\n--- Iniciando Scraper ---")
-    print(f"Modo Notificaciones: {'Activado' if send_notifications else 'Desactivado (Inicialización)'}")
-    print(f"Modo Headless: {'Activado' if headless_mode else 'Desactivado'}")
-    print(f"URL de Búsqueda: {final_url}\n")
-
+def create_driver(headless_mode=False):
+    """Crea el driver de Selenium, ya sea remoto o local"""
+    
+    if USE_REMOTE_SELENIUM:
+        print("Inicializando Selenium WebDriver REMOTO...")
+        # Configurar las capacidades deseadas para Chrome
+        chrome_options = webdriver.ChromeOptions()
+        chrome_options.add_argument("--start-maximized")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36")
+        
+        if headless_mode:
+            chrome_options.add_argument('--headless=new')
+        
+        # Crear el driver remoto
+        try:
+            driver = webdriver.Remote(
+                command_executor=SELENIUM_HUB_URL,
+                options=chrome_options
+            )
+            print(f"✅ Conectado exitosamente a Selenium Hub en: {SELENIUM_HUB_URL}")
+            return driver
+        except Exception as e:
+            print(f"❌ Error conectando a Selenium Hub ({SELENIUM_HUB_URL}): {e}")
+            print("Intentando usar Selenium local como respaldo...")
+            # Fallback a Selenium local si falla el remoto
+    
+    # Selenium local (original)
+    print("Inicializando Selenium WebDriver LOCAL...")
     options = webdriver.ChromeOptions()
     options.add_argument("--start-maximized")
     if headless_mode:
@@ -241,8 +275,6 @@ def run_scraper(search_params, send_notifications=True, headless_mode=False):
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36")
 
-    print("Inicializando Selenium WebDriver...")
-    driver = None
     try:
         try:
             service = ChromeService(ChromeDriverManager().install())
@@ -251,14 +283,28 @@ def run_scraper(search_params, send_notifications=True, headless_mode=False):
             print(f"Error con ChromeDriverManager: {e_driver_manager}")
             print("Intentando con el ChromeDriver por defecto en PATH si existe...")
             driver = webdriver.Chrome(options=options)
-
+        print("✅ Driver local iniciado correctamente")
+        return driver
     except Exception as e:
-        print(f"Error Crítico al inicializar ChromeDriver: {e}"); return
+        print(f"❌ Error crítico inicializando ChromeDriver local: {e}")
+        raise
 
+def run_scraper(search_params, send_notifications=True, headless_mode=False):
+    final_url = build_wallapop_search_url(**search_params)
+    print(f"\n--- Iniciando Scraper ---")
+    print(f"Modo Selenium: {'REMOTO' if USE_REMOTE_SELENIUM else 'LOCAL'}")
+    print(f"Selenium Hub URL: {SELENIUM_HUB_URL if USE_REMOTE_SELENIUM else 'N/A'}")
+    print(f"Modo Notificaciones: {'Activado' if send_notifications else 'Desactivado (Inicialización)'}")
+    print(f"Modo Headless: {'Activado' if headless_mode else 'Desactivado'}")
+    print(f"URL de Búsqueda: {final_url}\n")
+
+    driver = None
     try:
+        driver = create_driver(headless_mode)
+        
         print(f"Abriendo URL...")
         driver.get(final_url)
-        time.sleep(5) # Aumentar espera inicial
+        time.sleep(5) 
 
         try:
             cookie_button = WebDriverWait(driver, 15).until(
@@ -326,29 +372,23 @@ def run_scraper(search_params, send_notifications=True, headless_mode=False):
 def main():
     search_config = {
         "keywords": "toyota corolla 180H", 
-        "category_id": "100", # Cambiado category_ids a category_id
+        "category_id": "100", 
          "brand": "Toyota", 
          "model": "Corolla", 
          "min_year": "2019", 
          "max_year": "2024", 
-        # "engine": "gasoline", 
-        # "min_km": "20000", 
-        # "max_km": "90000", 
-
-        "distance_in_km": "333", # Cambiado distance_in_km a distance_in_km (valor en km)
-        "latitude": "40.96882", 
-        "longitude": "-5.66388", 
-        
+        "distance_km": "185", 
+        "latitude": "40.97990", 
+        "longitude": "-6.09742", 
         "min_sale_price": "12000", 
         "max_sale_price": "22000", 
         "time_filter": "lastWeek", 
-        
         "source": "search_box", 
         "country_code": "ES" 
     }
 
-    MODO_INICIALIZACION = True
-    MODO_HEADLESS = False
+    MODO_INICIALIZACION = False
+    MODO_HEADLESS = True  # Recomendado para Selenium remoto
 
 
     if MODO_INICIALIZACION:
